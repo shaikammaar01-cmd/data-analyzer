@@ -7,3 +7,5 @@ xlrd
 sqlalchemy
 pymysql
 psycopg2-binary
+reportlab
+matplotlib
