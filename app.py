@@ -18,9 +18,17 @@ from sqlalchemy.engine import URL
 # ------------------------------------------------------------------
 st.set_page_config(page_title="Easy Data Analyzer", page_icon="📊", layout="wide")
 
-APP_NAME = "📊 Easy Data Analyzer"          # <- change to your own app name
-CONTACT = "WhatsApp: +91 XXXXXXXXXX"        # <- put your number here
-APP_URL = ""                                # <- optional: paste your app link here
+def secret(name, default=""):
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
+# These can be changed in Streamlit "Secrets" (no code editing needed)
+APP_NAME = str(secret("APP_NAME", "📊 Easy Data Analyzer"))
+CONTACT = str(secret("CONTACT", "WhatsApp: +91 XXXXXXXXXX"))
+APP_URL = str(secret("APP_URL", ""))
 
 COUNT = "Count of rows"
 MAXROWS = 200000
@@ -36,17 +44,45 @@ S.setdefault("clear_n", 0)
 # OPTIONAL ACCESS CODE (set ACCESS_CODE in Streamlit "Secrets")
 # ------------------------------------------------------------------
 def check_access():
-    try:
-        code = st.secrets.get("ACCESS_CODE", None)
-    except Exception:
-        code = None
-    if not code:
+    # Option 1: simple access code (old method, still works if ACCESS_CODE is set)
+    code = secret("ACCESS_CODE", None)
+    if code:
+        entered = st.sidebar.text_input("🔑 Access code", type="password")
+        if entered != code:
+            st.title(APP_NAME)
+            st.info(f"Please enter your access code in the left panel.\n\nNo code yet? Contact: {CONTACT}")
+            st.stop()
+
+    # Option 2: sign in with email (Google). Turn on with REQUIRE_LOGIN = "yes" in Secrets
+    if str(secret("REQUIRE_LOGIN", "")).lower() not in ("yes", "true", "1"):
         return
-    entered = st.sidebar.text_input("🔑 Access code", type="password")
-    if entered != code:
-        st.title(APP_NAME)
-        st.info(f"Please enter your access code in the left panel.\n\nNo code yet? Contact: {CONTACT}")
+    user = getattr(st, "user", None)
+    if user is None or not hasattr(st, "login"):
+        st.error("Sign-in needs a newer Streamlit version. Please check requirements.txt.")
         st.stop()
+    if not getattr(user, "is_logged_in", False):
+        st.title(APP_NAME)
+        st.markdown("### 🔐 Please sign in to continue")
+        st.write("Sign in with your email (Google account). We only see your name and email. "
+                 "We never see your password.")
+        st.button("Sign in with Google", on_click=st.login, type="primary")
+        st.caption(f"Need help? {CONTACT}")
+        st.stop()
+
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    try:
+        allowed = [str(e).strip().lower() for e in list(secret("ALLOWED_EMAILS", []) or [])]
+    except Exception:
+        allowed = []
+    if allowed and email not in allowed:
+        st.title(APP_NAME)
+        st.warning(f"The email **{email}** is not approved yet.")
+        st.write(f"To get access, contact: {CONTACT}")
+        st.button("Sign out", on_click=st.logout)
+        st.stop()
+    with st.sidebar:
+        st.caption(f"👤 Signed in as {email}")
+        st.button("Sign out", on_click=st.logout, key="signout_btn")
 
 
 # ------------------------------------------------------------------
