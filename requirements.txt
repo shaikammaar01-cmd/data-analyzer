@@ -1,5 +1,9 @@
-streamlit
+streamlit>=1.35
 pandas
 numpy
 plotly
 openpyxl
+xlrd
+sqlalchemy
+pymysql
+psycopg2-binary
