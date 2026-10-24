@@ -1,6 +1,9 @@
+import html
 import io
 import os
+import re
 import tempfile
+import urllib.parse
 import warnings
 
 import numpy as np
@@ -17,6 +20,7 @@ st.set_page_config(page_title="Easy Data Analyzer", page_icon="📊", layout="wi
 
 APP_NAME = "📊 Easy Data Analyzer"          # <- change to your own app name
 CONTACT = "WhatsApp: +91 XXXXXXXXXX"        # <- put your number here
+APP_URL = ""                                # <- optional: paste your app link here
 
 COUNT = "Count of rows"
 MAXROWS = 200000
@@ -149,6 +153,9 @@ def read_upload(f):
 
 def make_insights(df, num, cat, date):
     tips = [f"Your data has **{len(df):,} rows** and **{len(df.columns)} columns**."]
+    total_cells = max(1, df.shape[0] * df.shape[1])
+    quality = (1 - df.isna().sum().sum() / total_cells) * (1 - df.duplicated().sum() / max(1, len(df)))
+    tips.append(f"Data quality score: **{quality * 100:.0f}%** (100% means no empty cells and no duplicates).")
     missing = int(df.isna().sum().sum())
     if missing:
         tips.append(f"⚠️ There are **{missing:,} empty cells**. Fix them in the *Data & Combine* tab.")
@@ -252,6 +259,184 @@ def apply_slicers(df, cols, active):
 
 
 # ------------------------------------------------------------------
+# SMART DEFAULTS, GOOGLE SHEETS, REPORTS AND SHARING
+# ------------------------------------------------------------------
+KEY_MEASURE = ["sales", "revenue", "amount", "total", "profit", "income", "expense",
+               "cost", "price", "marks", "score", "salary", "quantity", "qty"]
+KEY_CAT = ["product", "item", "category", "name", "city", "region", "branch",
+           "department", "class", "subject", "type", "customer"]
+
+
+def smart_measure_index(measures):
+    for k in KEY_MEASURE:
+        for i, m in enumerate(measures):
+            if m != COUNT and k in m.lower():
+                return i
+    return max(0, len(measures) - 2) if len(measures) > 1 else 0
+
+
+def cat_rank(col):
+    low = str(col).lower()
+    for i, k in enumerate(KEY_CAT):
+        if k in low:
+            return i
+    return 99
+
+
+def load_gsheet(url, name):
+    m = re.search(r"docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)", url or "")
+    if not m:
+        st.error("Please paste a normal Google Sheets link.")
+        return
+    sid = m.group(1)
+    g = re.search(r"gid=(\d+)", url)
+    gid = g.group(1) if g else "0"
+    export = f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
+    try:
+        df = pd.read_csv(export)
+        if df.empty or (df.shape[1] == 1 and "html" in str(df.columns[0]).lower()):
+            raise ValueError("not readable")
+        key = (name or "").strip() or f"Google Sheet {sid[:6]}"
+        S["sources"][key] = clean_basic(df)
+        S["next_active"] = key
+        st.success(f"Loaded {len(df):,} rows.")
+    except Exception:
+        st.error("Could not load this sheet. In Google Sheets click Share, then set "
+                 "'Anyone with the link' to Viewer, and try again.")
+
+
+def plain(s):
+    return re.sub(r"\*\*", "", str(s))
+
+
+def latin(s):
+    return str(s).encode("latin-1", "ignore").decode("latin-1").strip()
+
+
+def share_text(title, kpis, tips):
+    lines = [title, ""]
+    lines += [f"{k}: {v}" for k, v in kpis]
+    lines.append("")
+    lines += [latin(plain(t)) for t in tips[:3]]
+    lines.append("")
+    lines.append(f"Made with {latin(APP_NAME)}" + (f" - {APP_URL}" if APP_URL else ""))
+    return "\n".join(lines)
+
+
+HTML_CSS = (
+    "body{font-family:Arial,Helvetica,sans-serif;margin:0;background:#f4f6f9;color:#222}"
+    ".wrap{max-width:1000px;margin:auto;padding:20px}"
+    "h1{margin:0 0 4px 0}.sub{color:#666;margin-bottom:16px}"
+    ".cards{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}"
+    ".card{flex:1;min-width:150px;background:#fff;border-radius:10px;padding:14px;"
+    "box-shadow:0 1px 4px rgba(0,0,0,.1)}"
+    ".lab{color:#666;font-size:13px}.val{font-size:24px;font-weight:bold;margin-top:4px}"
+    ".chart,.tips{background:#fff;border-radius:10px;padding:10px;margin-bottom:16px;"
+    "box-shadow:0 1px 4px rgba(0,0,0,.1)}"
+    ".foot{color:#888;font-size:12px;text-align:center;margin:20px 0}"
+)
+
+
+def build_html(title, by, kpis, tips, items):
+    cards = "".join(
+        f'<div class="card"><div class="lab">{html.escape(str(k))}</div>'
+        f'<div class="val">{html.escape(str(v))}</div></div>' for k, v in kpis)
+    tip_html = "".join(
+        "<li>" + re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html.escape(t)) + "</li>" for t in tips)
+    charts, first = [], True
+    for it in items:
+        t = it["table"]
+        if it["kind"] == "line":
+            fig = px.area(t, x=it["x"], y=it["y"])
+            fig.update_layout(hovermode="x unified")
+        else:
+            fig = px.bar(t, x=it["x"], y=it["y"], text_auto=".2s")
+        fig.update_layout(title=it["title"], margin=dict(t=50, b=20, l=10, r=10))
+        charts.append('<div class="chart">' + fig.to_html(
+            full_html=False, include_plotlyjs="cdn" if first else False) + "</div>")
+        first = False
+    byline = f"Prepared by {html.escape(by)} | " if by else ""
+    today = pd.Timestamp.today().strftime("%d %b %Y")
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{html.escape(title)}</title><style>{HTML_CSS}</style></head><body><div class='wrap'>"
+        f"<h1>{html.escape(title)}</h1><div class='sub'>{byline}{today}</div>"
+        f"<div class='cards'>{cards}</div>"
+        + "".join(charts)
+        + f"<div class='tips'><h3>Quick tips</h3><ul>{tip_html}</ul></div>"
+        f"<div class='foot'>Made with {html.escape(latin(APP_NAME))}. "
+        "Hover, zoom and click the charts. Needs internet to display charts.</div>"
+        "</div></body></html>"
+    )
+
+
+def build_pdf(title, by, kpis, tips, items, df):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from xml.sax.saxutils import escape
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.8 * cm, rightMargin=1.8 * cm,
+                            topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    today = pd.Timestamp.today().strftime("%d %b %Y")
+    story = [Paragraph(escape(latin(title)), styles["Title"])]
+    sub = (f"Prepared by {latin(by)} | " if by else "") + today
+    story += [Paragraph(escape(sub), styles["Normal"]), Spacer(1, 12)]
+
+    kt = Table([[latin(k), latin(v)] for k, v in kpis], colWidths=[9 * cm, 7 * cm])
+    kt.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+        ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+    ]))
+    story += [kt, Spacer(1, 12), Paragraph("Quick tips", styles["Heading2"])]
+    for t in tips:
+        story.append(Paragraph("- " + escape(latin(plain(t))), styles["Normal"]))
+    story.append(Spacer(1, 10))
+
+    for it in items:
+        t = it["table"]
+        fig, ax = plt.subplots(figsize=(7, 3))
+        if it["kind"] == "line":
+            ax.plot(t[it["x"]], t[it["y"]], marker="o", color="#4C78A8")
+        else:
+            ax.bar(t[it["x"]].astype(str), t[it["y"]], color="#4C78A8")
+            plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+        ax.set_title(latin(it["title"]), fontsize=10)
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        img = io.BytesIO()
+        fig.savefig(img, format="png", dpi=130)
+        plt.close(fig)
+        img.seek(0)
+        story += [Image(img, width=16.5 * cm, height=7.1 * cm), Spacer(1, 8)]
+
+    small = df.iloc[:15, :6]
+    rows = [[latin(c)[:16] for c in small.columns]]
+    for _, r in small.iterrows():
+        rows.append([latin(str(v))[:16] for v in r.values])
+    story.append(Paragraph("Data preview (first rows)", styles["Heading2"]))
+    dt = Table(rows, repeatRows=1)
+    dt.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4C78A8")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+    ]))
+    story.append(dt)
+    doc.build(story)
+    return buf.getvalue()
+
+
+# ------------------------------------------------------------------
 # SQL HELPERS
 # ------------------------------------------------------------------
 def connect_engine(engine):
@@ -302,11 +487,11 @@ def render_dashboard(active):
         c1, c2, c3 = st.columns(3)
         measures = num + [COUNT] if num else [COUNT]
         measure = c1.selectbox("Number to analyze", measures,
-                               index=max(0, len(measures) - 2) if num else 0, key=f"m_{active}")
+                               index=smart_measure_index(measures), key=f"m_{active}")
         agg = c2.selectbox("How to combine", list(AGG.keys()), key=f"a_{active}")
         grain = c3.selectbox("Time view", ["Month", "Day", "Week", "Quarter", "Year"], key=f"g_{active}")
         c4, c5, c6 = st.columns(3)
-        cat_opts = ["(none)"] + cat
+        cat_opts = ["(none)"] + sorted(cat, key=cat_rank)
         cat1 = c4.selectbox("Group 1", cat_opts, index=1 if cat else 0, key=f"c1_{active}")
         cat2 = c5.selectbox("Group 2", cat_opts, index=2 if len(cat) > 1 else 0, key=f"c2_{active}")
         date_opts = ["(none)"] + date
@@ -365,6 +550,7 @@ def render_dashboard(active):
             k[3].metric(f"Different {cat2}", f"{df_all[cat2].nunique():,}")
 
     label = f"{agg} of {measure}" if measure != COUNT else COUNT
+    items = []
 
     # Trend
     if dcol:
@@ -373,6 +559,7 @@ def render_dashboard(active):
         if not t.empty:
             t["Period"] = t[dcol].dt.to_period(freq).dt.to_timestamp()
             tt, val = agg_table(t, "Period", measure, agg)
+            items.append({"title": f"{label} by {grain.lower()}", "table": tt, "x": "Period", "y": val, "kind": "line"})
             st.markdown(f"#### 📈 {label} by {grain.lower()}")
             fig = px.area(tt, x="Period", y=val, markers=True)
             fig.update_layout(hovermode="x unified", margin=dict(t=10, b=10))
@@ -385,6 +572,7 @@ def render_dashboard(active):
             d1 = keep_selected(base, cat2, sel2)
             g1, val = agg_table(d1, cat1, measure, agg)
             g1 = g1.sort_values(val, ascending=False).head(15)
+            items.append({"title": f"{label} by {cat1}", "table": g1, "x": cat1, "y": val, "kind": "bar"})
             st.markdown(f"#### 📊 {label} by {cat1}")
             fig = px.bar(g1, x=cat1, y=val, text_auto=".2s", color_discrete_sequence=["#4C78A8"])
             fig.update_layout(clickmode="event+select", margin=dict(t=10, b=10))
@@ -396,6 +584,7 @@ def render_dashboard(active):
             d2 = keep_selected(base, cat1, sel1)
             g2, val = agg_table(d2, cat2, measure, agg)
             g2 = g2.sort_values(val, ascending=False).head(15)
+            items.append({"title": f"{label} by {cat2}", "table": g2, "x": cat2, "y": val, "kind": "bar"})
             st.markdown(f"#### 📊 {label} by {cat2}")
             fig = px.bar(g2, x=cat2, y=val, text_auto=".2s", color_discrete_sequence=["#F58518"])
             fig.update_layout(clickmode="event+select", margin=dict(t=10, b=10))
@@ -435,13 +624,57 @@ def render_dashboard(active):
     with st.expander("📋 See the data table"):
         st.dataframe(df_all.head(1000))
 
-    st.markdown("#### ⬇️ Download")
-    d1_, d2_ = st.columns(2)
-    d1_.download_button("⬇️ Excel report (with filters)", data=build_excel(df_all, num),
-                        file_name="my_report.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    d2_.download_button("⬇️ Filtered data (CSV)", data=df_all.to_csv(index=False).encode("utf-8"),
-                        file_name="filtered_data.csv", mime="text/csv")
+    st.markdown("#### ⬇️ Download and share")
+    r1, r2 = st.columns(2)
+    rep_title = r1.text_input("Report title", value=f"{active} report", key=f"rt_{active}")
+    rep_by = r2.text_input("Prepared by", value="", key=f"rb_{active}",
+                           placeholder="Your name or business")
+    kpis = [(f"{agg} of {measure}" if measure != COUNT else COUNT, fmt(main_val)),
+            ("Rows shown", f"{len(df_all):,} of {len(df):,}")]
+    if measure != COUNT:
+        kpis += [(f"Average {measure}", fmt(df_all[measure].mean())),
+                 (f"Highest {measure}", fmt(df_all[measure].max()))]
+    tips_all = make_insights(df_all, num, cat, date)
+
+    b1, b2 = st.columns(2)
+    b1.download_button("⬇️ Excel report (with filters)", data=build_excel(df_all, num),
+                       file_name="my_report.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    b2.download_button("⬇️ Filtered data (CSV)", data=df_all.to_csv(index=False).encode("utf-8"),
+                       file_name="filtered_data.csv", mime="text/csv")
+
+    b3, b4 = st.columns(2)
+    try:
+        html_bytes = build_html(rep_title, rep_by, kpis, tips_all, items).encode("utf-8")
+        b3.download_button("🌐 Interactive dashboard (HTML file)", data=html_bytes,
+                           file_name="dashboard.html", mime="text/html")
+    except Exception:
+        b3.warning("Could not create the HTML dashboard for this data.")
+
+    sig = (active, measure, agg, len(df_all), rep_title, rep_by)
+    if b4.button("📄 Prepare PDF report"):
+        try:
+            S["pdf"] = (sig, build_pdf(rep_title, rep_by, kpis, tips_all, items, df_all))
+        except Exception:
+            st.error("Could not create the PDF for this data.")
+    pdf = S.get("pdf")
+    if pdf and pdf[0] == sig:
+        b4.download_button("⬇️ Download PDF report", data=pdf[1],
+                           file_name="report.pdf", mime="application/pdf")
+
+    st.markdown("**📤 Share a summary**")
+    txt = share_text(rep_title, kpis, tips_all)
+    wa = "https://wa.me/?text=" + urllib.parse.quote(txt)
+    mail = ("mailto:?subject=" + urllib.parse.quote(rep_title)
+            + "&body=" + urllib.parse.quote(txt[:1500]))
+    btn = ("display:inline-block;padding:8px 16px;border-radius:8px;color:white;"
+           "text-decoration:none;font-weight:600;margin-right:10px;")
+    st.markdown(
+        f'<a href="{wa}" target="_blank" style="{btn}background:#25D366;">💬 Share on WhatsApp</a>'
+        f'<a href="{mail}" style="{btn}background:#4C78A8;">✉️ Share by email</a>',
+        unsafe_allow_html=True)
+    st.caption("These buttons send a short text summary. To send the full report, "
+               "download the HTML or PDF file above and attach it in WhatsApp or your email.")
 
 
 # ------------------------------------------------------------------
@@ -544,7 +777,7 @@ st.caption("Upload files or connect a database. Combine them. Explore with click
 
 with st.sidebar:
     st.header("1️⃣ Add your data")
-    tab_files, tab_sql = st.tabs(["📁 Files", "🗄️ SQL database"])
+    tab_files, tab_gs, tab_sql = st.tabs(["📁 Files", "📄 Google Sheet", "🗄️ SQL"])
 
     with tab_files:
         files = st.file_uploader("Excel or CSV (you can choose many files)",
@@ -564,6 +797,14 @@ with st.sidebar:
             S["sources"]["Sample Sales"] = clean_basic(a)
             S["sources"]["Sample Products"] = clean_basic(b)
             S["next_active"] = "Sample Sales"
+
+    with tab_gs:
+        st.caption("In Google Sheets: Share, then set **Anyone with the link** to **Viewer**. "
+                   "Paste the link below. For another tab of the sheet, open that tab and paste its link.")
+        gs_url = st.text_input("Google Sheet link", key="gs_url")
+        gs_name = st.text_input("Name (optional)", key="gs_name")
+        if st.button("Load Google Sheet"):
+            load_gsheet(gs_url, gs_name)
 
     with tab_sql:
         st.caption("🔒 Tip: use a **read-only** database user. We never save your password.")
