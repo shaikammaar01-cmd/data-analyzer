@@ -1,4 +1,5 @@
-streamlit>=1.35
+streamlit>=1.42
+Authlib>=1.3.2
 pandas
 numpy
 plotly
