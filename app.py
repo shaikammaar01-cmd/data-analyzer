@@ -11,8 +11,8 @@ import streamlit as st
 # ------------------------------------------------------------------
 st.set_page_config(page_title="Easy Data Analyzer", page_icon="📊", layout="wide")
 
-APP_NAME = "📊 Easy Data Analyzer"          # <- change to your own app name
-CONTACT = "WhatsApp: +91 XXXXXXXXXX"        # <- put your number here
+APP_NAME = "📊 Smart Report Maker"          # <- change to your own app name
+CONTACT = "WhatsApp: +918639888509"        # <- put your number here
 
 
 # ------------------------------------------------------------------
